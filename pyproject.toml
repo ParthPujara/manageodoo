@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "manageodoo"
+version = "0.0.1"
+authors = [
+  { name="Parth Pujara", email="parthtpujara@gmail.com" },
+]
+description = "Manage Odoo"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+keywords = ["odoo", "manage", "odoo manager", "odoo cli"]
+dependencies = [
+    "click>=8.1",
+    "tomli-w>=1.0",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.scripts]
+manageodoo = "manageodoo.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ParthPujara/manageodoo"
+Issues = "https://github.com/ParthPujara/manageodoo/issues"
