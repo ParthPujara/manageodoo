@@ -7,12 +7,32 @@ rather than importing Odoo, so each env stays pinned to its own interpreter.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Iterable, Optional
 
 from .env import Environment
 from .errors import RunError
 from .odooconf import write_conf
+
+
+def normalize_test_tags(values: Iterable[str]) -> str:
+    """Turn --test values into an Odoo --test-tags spec string.
+
+    A bare ``test_...`` name is a method selector, so it gets the leading dot
+    Odoo expects (``.test_foo``). Anything else — full specs like
+    ``/module:Class.test_foo``, tag names, ``-`` exclusions — passes through
+    untouched. Values may be comma-separated; the result joins with commas."""
+    out: list[str] = []
+    for value in values:
+        for part in str(value).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if re.fullmatch(r"test_\w+", part):
+                part = "." + part
+            out.append(part)
+    return ",".join(out)
 
 
 def build_argv(
@@ -25,6 +45,7 @@ def build_argv(
     update: Optional[str] = None,
     dev: Optional[str] = None,
     demo: Optional[bool] = None,
+    test: Iterable[str] = (),
     stop_after_init: bool = False,
     log_level: Optional[str] = None,
     raw: Iterable[str] = (),
@@ -48,6 +69,11 @@ def build_argv(
 
     eff_demo = demo if demo is not None else env.demo
     argv += ["--with-demo"] if eff_demo else ["--without-demo"]
+
+    if test:
+        tags = normalize_test_tags(test)
+        if tags:
+            argv += ["--test-enable", "--test-tags", tags]
 
     if stop_after_init:
         argv += ["--stop-after-init"]

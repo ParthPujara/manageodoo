@@ -209,10 +209,59 @@ def _print_detect(res: DetectResult, *, addons_are_optin: bool = False) -> None:
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
-@click.group()
+class SectionedGroup(click.Group):
+    """A Group whose --help lists commands under section headings instead of
+    one flat ``Commands:`` block. ``sections`` is an ordered list of
+    ``(title, (command names…))``; any command not claimed by a section still
+    shows up under 'Other commands', so nothing can silently disappear from
+    the help output."""
+
+    def __init__(self, *args, sections=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self.sections = tuple(sections)
+
+    def format_commands(self, ctx: click.Context,
+                        formatter: click.HelpFormatter) -> None:
+        all_names = self.list_commands(ctx)
+        if not all_names:
+            return
+        limit = formatter.width - 6 - max(len(n) for n in all_names)
+        claimed = {n for _, names in self.sections for n in names}
+        blocks = list(self.sections)
+        blocks.append(
+            ("Other commands", tuple(n for n in all_names if n not in claimed)))
+        for title, names in blocks:
+            rows = []
+            for n in names:
+                cmd = self.get_command(ctx, n)
+                if cmd is None or cmd.hidden:
+                    continue
+                rows.append((n, cmd.get_short_help_str(limit)))
+            if rows:
+                with formatter.section(title):
+                    formatter.write_dl(rows)
+
+
+_SECTIONS = (
+    ("Set up environments", ("detect", "add", "edit")),
+    ("Inspect", ("list", "show")),
+    ("Run", ("run",)),
+    ("Clean up", ("rm", "clear")),
+    ("Parallel branches", ("worktree",)),
+    ("Global defaults", ("config",)),
+)
+
+
+@click.group(cls=SectionedGroup, sections=_SECTIONS,
+             epilog="Run 'manageodoo COMMAND --help' for a command's full "
+                    "option list.")
 @click.version_option(package_name="manageodoo", message="%(version)s")
 def cli() -> None:
-    """Manage and run multiple Odoo development environments."""
+    """Manage and run multiple Odoo development environments.
+
+    Register each local Odoo install once (detect/add), then launch it by
+    name with 'manageodoo run NAME' — right venv, addons-path, ports, and
+    config file every time."""
 
 
 @cli.command("detect")
@@ -249,7 +298,7 @@ def detect_cmd(path: str, name: str | None, register: bool,
         _hint_addons(env, detected_addons)
 
 
-@cli.command()
+@cli.command(short_help="Register an environment from a path, with overrides.")
 @click.argument("name")
 @click.option("--root", required=True, help="Container path of the Odoo install.")
 @click.option("--odoo-bin", help="Override the odoo-bin path.")
@@ -324,7 +373,7 @@ def list_cmd(as_json: bool) -> None:
             fg="cyan")
 
 
-@cli.command()
+@cli.command(short_help="Show full config and the exact command it runs.")
 @click.argument("name")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
 def show(name: str, as_json: bool) -> None:
@@ -357,7 +406,7 @@ def show(name: str, as_json: bool) -> None:
     click.echo("  " + shlex.join(argv))
 
 
-@cli.command()
+@cli.command(short_help="Remove an environment (drops its database by default).")
 @click.argument("name")
 @click.option("--keep-conf", is_flag=True, help="Leave the generated .conf on disk.")
 @click.option("--drop-db/--keep-db", "drop_db", default=None,
@@ -395,7 +444,7 @@ def rm(name: str, keep_conf: bool, drop_db: bool | None, yes: bool,
     click.secho(f"Removed '{name}'{tail} from the registry.", fg="green")
 
 
-@cli.command()
+@cli.command(short_help="Remove ALL environments (databases and worktrees too).")
 @click.option("--keep-conf", is_flag=True, help="Leave the generated .conf files on disk.")
 @click.option("--drop-db/--keep-db", "drop_db", default=None,
               help="Drop / keep each PostgreSQL database (default: drop).")
@@ -443,7 +492,7 @@ def clear(keep_conf: bool, drop_db: bool | None, yes: bool, force_drop: bool,
         click.secho(f"  ! kept '{n}': {msg}", fg="yellow")
 
 
-@cli.command()
+@cli.command(short_help="Change a registered environment's settings.")
 @click.argument("name")
 @click.option("--rename", help="Rename the environment (also renames its conf).")
 @click.option("--python", help="Set the interpreter path.")
@@ -506,7 +555,8 @@ def edit(name, rename, python, odoo_bin, enterprise, addons, db, http_port,
     click.secho(f"Updated '{env.name}'.", fg="green")
 
 
-@cli.command(context_settings=dict(ignore_unknown_options=True))
+@cli.command(context_settings=dict(ignore_unknown_options=True),
+             short_help="Launch Odoo for NAME (flags override one launch).")
 @click.argument("name")
 @click.option("-d", "--database", help="Database (default: env's).")
 @click.option("-p", "--http-port", type=int, help="Override http port.")
@@ -514,15 +564,29 @@ def edit(name, rename, python, odoo_bin, enterprise, addons, db, http_port,
 @click.option("-u", "--update", help="Update module(s), comma-separated.")
 @click.option("--dev", help="Odoo --dev features (e.g. all).")
 @click.option("--demo/--no-demo", "demo", default=None, help="Force demo data on/off.")
+@click.option("--test", "test", multiple=True,
+              help="Run test(s): a bare test_ function name (the '.' Odoo needs "
+                   "is added for you) or a full --test-tags spec "
+                   "([-][tag][/module][:class][.method]). Comma-separated or "
+                   "repeatable. Implies --test-enable.")
 @click.option("--stop-after-init", is_flag=True, help="Init then exit.")
 @click.option("--log-level", help="Odoo log level.")
 @click.argument("raw", nargs=-1, type=click.UNPROCESSED)
-def run(name, database, http_port, init, update, dev, demo, stop_after_init,
-        log_level, raw) -> None:
-    """Launch Odoo for NAME. Args after -- are passed straight to odoo-bin."""
+def run(name, database, http_port, init, update, dev, demo, test,
+        stop_after_init, log_level, raw) -> None:
+    """Launch Odoo for NAME. Args after -- are passed straight to odoo-bin.
+
+    With --test, Odoo starts with --test-enable and --test-tags built from the
+    given names. Note: Odoo only executes tests for modules being installed or
+    updated in that session, so pair --test with -u (or -i) MODULE."""
     doc = config.load()
     env = _get_env(doc, name)
     _warn_missing_addons(env)
+    if test and not (init or update):
+        click.secho(
+            "  ! --test without -i/-u: Odoo only runs tests for modules being "
+            "installed/updated. Add e.g. -u <module> or nothing will execute.",
+            fg="yellow", err=True)
     code = run_env(
         env,
         database=database,
@@ -531,6 +595,7 @@ def run(name, database, http_port, init, update, dev, demo, stop_after_init,
         update=update,
         dev=dev,
         demo=demo,
+        test=test,
         stop_after_init=stop_after_init,
         log_level=log_level,
         raw=raw,
@@ -538,12 +603,16 @@ def run(name, database, http_port, init, update, dev, demo, stop_after_init,
     raise SystemExit(code)
 
 
-@cli.group()
+@cli.group(short_help="Work on several branches at once via git worktrees.")
 def worktree() -> None:
-    """Manage parallel-branch worktrees (community + enterprise in lockstep)."""
+    """Manage parallel-branch worktrees (community + enterprise in lockstep).
+
+    Each branch gets its own working directory sharing the origin repo's
+    history — switch branches by picking an environment, no stash/commit."""
 
 
-@worktree.command("add")
+@worktree.command("add",
+                  short_help="Create worktrees for BRANCH and register an env.")
 @click.argument("branch")
 @click.option("--from", "source_name", required=True,
               help="Source environment whose repos to branch from.")
@@ -578,7 +647,7 @@ def worktree_add(branch, source_name, repos, name, path, start_point, do_fetch,
     click.echo(f"Run it with:  manageodoo run {env.name}")
 
 
-@worktree.command("list")
+@worktree.command("list", short_help="List managed worktree environments.")
 @click.option("--from", "source_name",
               help="Show raw git worktrees for this env's repos instead.")
 def worktree_list(source_name):
@@ -608,7 +677,8 @@ def worktree_list(source_name):
         click.echo("  ".join(row[i].ljust(widths[i]) for i in range(len(headers))))
 
 
-@worktree.command("rm")
+@worktree.command("rm",
+                  short_help="Remove a worktree env (git worktrees + db).")
 @click.argument("name")
 @click.option("--force", is_flag=True, help="Remove even if a worktree is dirty.")
 @click.option("--keep-conf", is_flag=True, help="Leave the generated .conf on disk.")
@@ -632,7 +702,8 @@ def worktree_rm(name, force, keep_conf, drop_db, yes, force_drop):
                 fg="green")
 
 
-@worktree.command("clear")
+@worktree.command("clear",
+                  short_help="Remove ALL managed worktree environments.")
 @click.option("--keep-conf", is_flag=True, help="Leave the generated .conf files on disk.")
 @click.option("--drop-db/--keep-db", "drop_db", default=None,
               help="Drop / keep each PostgreSQL database (default: drop).")
